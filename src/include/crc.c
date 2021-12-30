@@ -1,83 +1,88 @@
 #include "crc.h"
+#define CRC_BITS_UINT64_T 64
+#define CRC_BITS_BYTE
 
-#define CRC8_POLYNOMIAL 0x07
-#define CRC8_MASK		0x80
-#define CRC8_INIT		0
+uint64_t __crc_gen_mask(uint8_t bits) {
+	return (size_t) ((uint64_t)1 << (uint64_t)(bits - 1));
+}
 
-uint8_t __inverse_byte(uint8_t byte) {
-	uint8_t to_ret = 0;
-	for (uint8_t i = 0; i < 8; i++) {
-		if (byte & (1 << i))
-			to_ret |= (1 << (7 - i));
+uint64_t __crc_inv_value(uint64_t val) {
+	size_t to_ret = 0;
+	for (uint8_t i = 0; i < 64; i++) {
+		if (val & ((uint64_t)1 << (uint64_t)i)) {
+			to_ret |= ((uint64_t)1 << (63 - i) );
+		}
 	}
 
 	return to_ret;
 }
 
-uint32_t __inverse_uint(uint32_t val) {
-	uint32_t to_ret = 0;
-	for (uint32_t i = 0; i < 32; i++) {
-		if (val & (1 << i))
-			to_ret |= (1 << (31 - i));
+uint64_t __crc_gen_and_mask(uint8_t bits) {
+	uint64_t to_ret = 1;
+
+	for (uint8_t i = 1; i < bits; i++) {
+		to_ret = (to_ret << 1) | 1;
 	}
 
 	return to_ret;
+
 }
 
 
+uint64_t crc_calc(char *data, size_t length, struct crc_info *info) {
+	// TODO: That black magic with inversed CRC32 when init_val != 0
+	uint64_t reg;
+	uint64_t reg_mask;
 
-uint8_t calc_crc8(char *data, size_t size) {
-	uint8_t reg = CRC8_INIT;
-	for (size_t i = 0; i < size; i++) {
-		uint8_t curr_byte = data[i];
+	if(!info->ref_form)
+		reg_mask = __crc_gen_mask(info->pol_width*8) ;
+
+	if (!info->init_val)
+		reg = 0;
+
+	for (size_t i = 0; i < length; i++) {
 		for (uint8_t j = 0; j < 8; j++) {
-			uint8_t curr_bit = (curr_byte & (1 << (7 - j))) ? 1 : 0;
-			if (reg & CRC8_MASK) {
-				reg = (reg << 1) | curr_bit;
-				reg ^= CRC8_POLYNOMIAL;
-			} else {
-				reg = (reg << 1) | curr_bit;
+			uint8_t curr_bit;
+			if (info->ref_in)
+				curr_bit = (data[i] & (1 << j) ) ? 1 : 0;
+			else
+				curr_bit = (data[i] & (1 << ( 7 - j))) ? 1 : 0;
+
+			if(info->ref_form){
+				uint64_t app_val = (info->pol_width << 3) - 1;
+				reg = (reg & 1) ? ( ( reg >> 1 ) | app_val ) ^ info->polynomial : ( ( reg >> 1 ) | app_val);
+			}
+			else{
+				reg = ( reg & reg_mask ) ? ( ( reg << 1 ) |  curr_bit ) ^ info->polynomial : (reg << 1) | curr_bit;
 			}
 		}
-
 	}
 
-	for (uint8_t i = 0; i < 8; i++) {
-		if (reg & CRC8_MASK) {
-			reg = (reg << 1) ^ CRC8_POLYNOMIAL;
-		} else {
-			reg <<= 1;
+	for(uint8_t i = 0 ; i < info->pol_width*8; i++){
+		if(info->ref_form){
+			reg = (reg & 1) ? (reg >> 1) ^ info->polynomial : (reg >> 1);
 		}
-
+		else{
+			reg = ( reg & reg_mask ) ? (reg << 1) ^ info->polynomial : (reg << 1);
+		}
 	}
+
+
+	if (info->xor_val)
+			reg ^= info->xor_val;
+
+
+	if (info->ref_out){
+		reg = __crc_inv_value(reg);
+		reg &= __crc_inv_value( __crc_gen_and_mask(info->pol_width*8) );
+		reg >>= (64 - info->pol_width*8);
+	} else{
+		reg &= __crc_gen_and_mask(info->pol_width*8);
+	}
+
 
 	return reg;
 }
 
-#define CRC32_POLYNOMIAL 0x04C11DB7
-uint32_t calc_crc32(char *data, size_t size) {
-	uint32_t reg = -1;
-	for (size_t i = 0; i < size; i++) {
-		uint8_t curr_byte = (data[i]);
-		for (uint8_t j = 0; j < 8; j++) {
-			uint8_t curr_bit = (curr_byte & (1 << j)) ? 1 : 0;
-			if (reg & 0x80000000) {
-				reg = (reg << 1) | curr_bit;
-				reg ^= CRC32_POLYNOMIAL;
-			} else {
-				reg = (reg << 1) | curr_bit;
-			}
-		}
 
-	}
 
-	for (uint8_t i = 0; i < 32; i++) {
-		if (reg & 0x80000000) {
-			reg = (reg << 1) ^ CRC32_POLYNOMIAL;
-		} else {
-			reg <<= 1;
-		}
-
-	}
-	return __inverse_uint(reg) ^ -1;
-}

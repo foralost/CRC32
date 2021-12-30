@@ -1,13 +1,22 @@
-#include "include/crc.h"
+#include <stdio.h>
+
 #include <string.h>
+#include "include/crc.h"
+
 int main(int argc, char** argv)
 {
+	struct crc_info crc;
+	memset(&crc, 0, sizeof(struct crc_info));
 
-	char* test = "123456789";
+	crc.pol_width  = 1;
+	crc.polynomial = 0x39;
+	crc.ref_in = 1;
+	crc.ref_out = 1;
+
+	char* test = "1";
 	size_t s = strlen(test);
 
-	printf("0x%08x\n", calc_crc32(test, s));
-	printf("0x%08x\n", calc_crc8(test, s));
+	printf("%lx\n", crc_calc(test, s, &crc));
 
 
 	return 0;
