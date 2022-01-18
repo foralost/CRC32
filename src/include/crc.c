@@ -9,16 +9,48 @@ uint64_t __crc_gen_mask(uint8_t bits) {
 	return (size_t) ((uint64_t) 1 << (uint64_t) (bits - 1));
 }
 
-void __crc_calc_tab_init(uint8_t used_bytes, struct crc_info *info) {
+uint8_t __crc_inv_byte(uint8_t val) {
+	uint8_t to_ret = 0;
+
+	for (uint8_t i = 0; i < 8; i++) {
+		if (val & (1 << i)) {
+			to_ret |= 1 << (7 - i);
+		}
+	}
+	return to_ret;
+}
+
+uint64_t __crc_inv_value(uint64_t val) {
+	size_t to_ret = 0;
+	for (uint8_t i = 0; i < 64; i++) {
+		if (val & ((uint64_t) 1 << (uint64_t) i)) {
+			to_ret |= ((uint64_t) 1 << (63 - i));
+		}
+	}
+
+	return to_ret;
+}
+
+void __crc_calc_tab_init(uint8_t used_bytes, struct crc_info *info,
+		struct crc_tab *tab_info) {
 
 	uint64_t reg;
-	uint64_t curr_short = 1;
+	uint32_t curr_short = 1;
 	uint64_t crc_mask = __crc_gen_mask(info->pol_width << 3);
 
 	__crc_calc_tab[0] = 0;
 	for (;;) {
-		reg = curr_short;
-		for (uint8_t i = 0; i < (info->pol_width << 3); i++) {
+
+		if (info->ref_form) {
+			reg = curr_short;
+		} else {
+			reg =
+					curr_short
+							<< ((info->pol_width << 3)
+									- (tab_info->bytes_per_iter << 3));
+		}
+
+		for (uint8_t i = 0; i < (tab_info->bytes_per_iter << 3); i++) {
 
 			if (info->ref_form)
 				reg = (reg & 1) ? (reg >> 1) ^ info->polynomial : (reg >> 1);
@@ -36,27 +68,6 @@ void __crc_calc_tab_init(uint8_t used_bytes, struct crc_info *info) {
 		}
 	}
 
-}
-
-uint8_t __crc_inv_byte(uint8_t val) {
-	uint8_t to_ret = 0;
-
-	for (uint8_t i = 0; i < 8; i++) {
-		if (val & (1 << i)) {
-			to_ret |= 1 << (7 - i);
-		}
-	}
-	return to_ret;
-}
-uint64_t __crc_inv_value(uint64_t val) {
-	size_t to_ret = 0;
-	for (uint8_t i = 0; i < 64; i++) {
-		if (val & ((uint64_t) 1 << (uint64_t) i)) {
-			to_ret |= ((uint64_t) 1 << (63 - i));
-		}
-	}
-
-	return to_ret;
 }
 
 uint64_t __crc_gen_and_mask(uint8_t bits) {
@@ -117,25 +128,35 @@ uint64_t __crc_gen_init_reg(struct crc_info *info, uint64_t *reg_mask) {
 	return reg;
 }
 
+uint16_t __crc_get_top_short(struct crc_info *info, struct crc_tab *tab,
+		uint64_t reg) {
+	uint16_t top_short;
+	if (info->pol_width == 1) {
+		top_short = reg & 0xFF;
+	} else if (info->ref_form) {
+		top_short = (tab->bytes_per_iter == 1) ? reg & 0xFF : reg & 0xFFFF;
+
+	} else {
+		top_short =
+				(tab->bytes_per_iter == 1) ?
+						((reg >> ((info->pol_width << 3) - 8)) & 0xFF) :
+						((reg >> ((info->pol_width << 3) - 16)) & 0xFFFF);
+	}
+
+	return top_short;
+}
 uint64_t crc_calc_table(char *data, size_t length, struct crc_info *info,
 		struct crc_tab *tab) {
 
-	__crc_calc_tab_init(tab->bytes_per_iter, info);
+	__crc_calc_tab_init(tab->bytes_per_iter, info, tab);
 
 	uint16_t top_short = 0;
 	uint64_t reg_mask = __crc_gen_mask(info->pol_width << 3);
 	uint64_t reg = __crc_gen_init_reg(info, &reg_mask);
 
 	for (size_t i = 0; i < length;) {
-		if (info->ref_form) {
-			top_short = (tab->bytes_per_iter == 1) ? reg & 0xFF : reg & 0xFFFF;
-		} else {
-			top_short =
-					(tab->bytes_per_iter == 1) ?
-							((reg >> ((info->pol_width << 3) - 16)) & 0xFF00)
-									>> 8 :
-							((reg >> ((info->pol_width << 3) - 16)) & 0xFFFF);
-		}
+
+		top_short = __crc_get_top_short(info, tab, reg);
 
 		uint8_t curr_byte = 0;
 		// Append register
@@ -143,7 +164,8 @@ uint64_t crc_calc_table(char *data, size_t length, struct crc_info *info,
 		for (j = 0; (j < tab->bytes_per_iter) && (i + j) < length; j++) {
 
 			curr_byte =
-					info->ref_in ? __crc_inv_byte(data[i + j]) : data[i + j];
+					(info->ref_in && !info->ref_form) ?
+							__crc_inv_byte(data[i + j]) : data[i + j];
 
 			reg = info->ref_form ?
 					(reg >> 8) | ((curr_byte) << ((info->pol_width << 3) - 8)) :
@@ -157,17 +179,7 @@ uint64_t crc_calc_table(char *data, size_t length, struct crc_info *info,
 	for (uint8_t i = 0; i < (info->pol_width >> (tab->bytes_per_iter - 1));
 			i++) {
 
-		if (info->ref_form) {
-			top_short =
-					(tab->bytes_per_iter == 1) ?
-							(reg & 0xFF) >> 8 : reg & 0xFFFF;
-		} else {
-			top_short =
-					(tab->bytes_per_iter == 1) ?
-							((reg >> ((info->pol_width << 3) - 16)) & 0xFF00)
-									>> 8 :
-							((reg >> ((info->pol_width << 3) - 16)) & 0xFFFF);
-		}
+		top_short = __crc_get_top_short(info, tab, reg);
 
 		reg = info->ref_form ?
 				(reg >> (tab->bytes_per_iter << 3)) :
@@ -180,15 +192,14 @@ uint64_t crc_calc_table(char *data, size_t length, struct crc_info *info,
 }
 
 uint64_t crc_calc(char *data, size_t length, struct crc_info *info) {
-// TODO: That black magic with inversed CRC32 when init_val != 0
-	uint64_t reg;
 	uint64_t reg_mask = __crc_gen_mask(info->pol_width << 3);
+	uint64_t reg = __crc_gen_init_reg(info, &reg_mask);
 
-	reg = __crc_gen_init_reg(info, &reg_mask);
 	for (size_t i = 0; i < length; i++) {
 		for (uint8_t j = 0; j < 8; j++) {
 			uint8_t curr_bit;
-			if (info->ref_in)
+
+			if (info->ref_in || info->ref_form)
 				curr_bit = (data[i] & (1 << j)) ? 1 : 0;
 			else
 				curr_bit = (data[i] & (1 << (7 - j))) ? 1 : 0;
@@ -205,14 +216,17 @@ uint64_t crc_calc(char *data, size_t length, struct crc_info *info) {
 						(reg << 1) | curr_bit;
 			}
 		}
+
 	}
 
 	for (uint8_t i = 0; i < info->pol_width * 8; i++) {
+
 		if (info->ref_form) {
 			reg = (reg & 1) ? (reg >> 1) ^ info->polynomial : (reg >> 1);
 		} else {
 			reg = (reg & reg_mask) ? (reg << 1) ^ info->polynomial : (reg << 1);
 		}
+
 	}
 
 	__crc_final_round(&reg, info);
